@@ -1,0 +1,6 @@
+requests
+fake-useragent
+Faker
+pyTelegramBotAPI
+telebot
+bs4
